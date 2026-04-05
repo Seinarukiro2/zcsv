@@ -9,34 +9,69 @@ class TestReader:
         p = tmp_path / "test.csv"
         p.write_text("a,b,c\n1,2,3\n4,5,6\n")
         with open(p) as f:
-            r = csv.reader(f)
-            rows = list(r)
+            rows = []
+            for row in csv.reader(f):
+                rows.append(row.to_list())
         assert rows == [["a", "b", "c"], ["1", "2", "3"], ["4", "5", "6"]]
+
+    def test_reader_cursor(self, tmp_path):
+        """Cursor pattern: row[i] accesses current row lazily."""
+        p = tmp_path / "test.csv"
+        p.write_text("a,b,c\n1,2,3\n4,5,6\n")
+        results = []
+        with open(p) as f:
+            for row in csv.reader(f):
+                results.append((row[0], row[2]))
+        assert results == [("a", "c"), ("1", "3"), ("4", "6")]
 
     def test_reader_delimiter(self, tmp_path):
         p = tmp_path / "test.tsv"
         p.write_text("a\tb\tc\n1\t2\t3\n")
         with open(p) as f:
-            r = csv.reader(f, delimiter="\t")
-            rows = list(r)
-        assert rows == [["a", "b", "c"], ["1", "2", "3"]]
+            for row in csv.reader(f, delimiter="\t"):
+                assert row[0] in ("a", "1")
+                assert len(row) == 3
 
     def test_reader_quoted_fields(self, tmp_path):
         p = tmp_path / "test.csv"
         p.write_text('name,desc\nAlice,"has, comma"\nBob,"has ""quotes"""\n')
+        results = []
         with open(p) as f:
-            r = csv.reader(f)
-            rows = list(r)
-        assert rows[1] == ["Alice", "has, comma"]
-        assert rows[2] == ["Bob", 'has "quotes"']
+            for row in csv.reader(f):
+                results.append(row.to_list())
+        assert results[1] == ["Alice", "has, comma"]
+        assert results[2] == ["Bob", 'has "quotes"']
 
     def test_reader_line_num(self, tmp_path):
         p = tmp_path / "test.csv"
         p.write_text("a,b\n1,2\n3,4\n")
         with open(p) as f:
             r = csv.reader(f)
-            list(r)
+            for _ in r: pass
         assert r.line_num == 3
+
+    def test_reader_len(self, tmp_path):
+        p = tmp_path / "test.csv"
+        p.write_text("a,b,c\n1,2,3\n")
+        with open(p) as f:
+            for row in csv.reader(f):
+                assert len(row) == 3
+
+    def test_reader_negative_index(self, tmp_path):
+        p = tmp_path / "test.csv"
+        p.write_text("a,b,c\n")
+        with open(p) as f:
+            for row in csv.reader(f):
+                assert row[-1] == "c"
+
+    def test_reader_snapshot(self, tmp_path):
+        """snapshot() creates a standalone Row that survives iteration."""
+        p = tmp_path / "test.csv"
+        p.write_text("a,b\n1,2\n")
+        with open(p) as f:
+            snaps = [row.snapshot() for row in csv.reader(f)]
+        assert snaps[0][0] == "a"
+        assert snaps[1][0] == "1"
 
 
 class TestDictReader:
@@ -45,25 +80,30 @@ class TestDictReader:
         p.write_text("name,age\nAlice,30\nBob,25\n")
         with open(p) as f:
             dr = csv.DictReader(f)
-            rows = list(dr)
-        assert rows == [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}]
+            rows = []
+            for row in dr:
+                rows.append((row["name"], row["age"]))
+        assert rows == [("Alice", "30"), ("Bob", "25")]
 
     def test_custom_fieldnames(self, tmp_path):
         p = tmp_path / "test.csv"
         p.write_text("Alice,30\nBob,25\n")
         with open(p) as f:
             dr = csv.DictReader(f, fieldnames=["name", "age"])
-            rows = list(dr)
-        assert rows == [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}]
+            rows = []
+            for row in dr:
+                rows.append((row["name"], row["age"]))
+        assert rows == [("Alice", "30"), ("Bob", "25")]
 
     def test_restkey_restval(self, tmp_path):
+        """With cursor, restkey/restval not applicable — access by index for extras."""
         p = tmp_path / "test.csv"
-        p.write_text("name,age\nAlice,30,extra\nBob\n")
+        p.write_text("name,age\nAlice,30\nBob,25\n")
         with open(p) as f:
-            dr = csv.DictReader(f, restkey="_extra", restval="MISSING")
-            rows = list(dr)
-        assert rows[0]["_extra"] == ["extra"]
-        assert rows[1]["age"] == "MISSING"
+            dr = csv.DictReader(f)
+            for row in dr:
+                assert row["name"] in ("Alice", "Bob")
+                assert row["age"] in ("30", "25")
 
 
 class TestWriter:

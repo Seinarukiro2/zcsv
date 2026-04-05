@@ -5,6 +5,8 @@ mod validator;
 mod schema;
 mod types;
 mod parallel;
+mod fast_pyobjects;
+mod row;
 
 use memmap2::Mmap;
 use pyo3::prelude::*;
@@ -17,6 +19,8 @@ const MMAP_THRESHOLD: u64 = 2 * 1024 * 1024; // 2 MB
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<reader::PyReader>()?;
     m.add_class::<writer::PyWriter>()?;
+    m.add_class::<row::Row>()?;
+    m.add_class::<row::RowIterator>()?;
     m.add_function(wrap_pyfunction!(read_csv, m)?)?;
     m.add_function(wrap_pyfunction!(write_csv, m)?)?;
     m.add_function(wrap_pyfunction!(sniff_delimiter, m)?)?;
@@ -108,27 +112,23 @@ fn read_csv(
             || sniffer::needs_encoding_conversion(bytes);
 
         let (headers, raw_rows) = if needs_decode {
-            // Non-UTF8 or explicit encoding: decode first, then parse string
             let content = sniffer::decode_bytes_inner(bytes, encoding.as_deref())?;
             let delim = delimiter.unwrap_or_else(|| sniffer::detect_delimiter(&content));
-            reader::parse_csv_string(
-                &content, delim, has_header, skip_rows, max_rows, columns.as_deref(), strict,
+            reader::parse_csv_to_strings(
+                content.as_bytes(), delim, has_header, skip_rows, max_rows, columns.as_deref(), strict,
             )?
         } else {
-            // UTF-8 (or ASCII): parse bytes directly via mmap — zero copy to parser
-            // Skip BOM if present
             let csv_bytes = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
                 &bytes[3..]
             } else {
                 bytes
             };
             let delim = delimiter.unwrap_or_else(|| {
-                // Quick sniff on first 4KB
                 let sample = std::str::from_utf8(&csv_bytes[..csv_bytes.len().min(4096)])
                     .unwrap_or("");
                 sniffer::detect_delimiter(sample)
             });
-            reader::parse_csv_bytes(
+            reader::parse_csv_to_strings(
                 csv_bytes, delim, has_header, skip_rows, max_rows, columns.as_deref(), strict,
             )?
         };

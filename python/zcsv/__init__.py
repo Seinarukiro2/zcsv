@@ -5,7 +5,7 @@ Usage:
     import zcsv as csv  # drop-in replacement for stdlib csv
 """
 
-from zcsv._core import PyReader, PyWriter, read_csv, write_csv, sniff_delimiter
+from zcsv._core import PyReader, PyWriter, Row, read_csv, write_csv, sniff_delimiter
 from zcsv.compat import (
     QUOTE_ALL,
     QUOTE_MINIMAL,
@@ -20,6 +20,10 @@ from zcsv.compat import (
     Sniffer,
 )
 from typing import Any, Iterator, Optional, Sequence
+import collections.abc
+
+# Register Row as a Sequence so isinstance(row, Sequence) works
+collections.abc.Sequence.register(Row)
 
 __version__ = "0.1.0"
 __all__ = [
@@ -57,43 +61,28 @@ def reader(
     strict: bool = False,
     safe: bool = False,
     **kwargs,
-) -> "ZcsvReader":
-    """Drop-in replacement for csv.reader(). Returns an iterator of rows (list[str])."""
+) -> PyReader:
+    """Drop-in replacement for csv.reader().
+
+    Returns a cursor iterator — each iteration advances the cursor.
+    row[0] accesses current row's field lazily (zero-alloc per row).
+
+    For `list(reader)`, use `[row.snapshot() for row in reader]` or
+    `[row.to_list() for row in reader]`.
+    """
     if dialect == "excel_tab":
         delimiter = "\t"
-    return ZcsvReader(csvfile, delimiter=delimiter, quotechar=quotechar, strict=strict, safe=safe)
-
-
-class ZcsvReader:
-    """Stdlib-compatible CSV reader wrapping Rust PyReader."""
-
-    def __init__(self, csvfile, delimiter=",", quotechar='"', strict=False, safe=False):
-        self._reader = PyReader(csvfile, delimiter=delimiter, quotechar=quotechar, strict=strict, safe=safe)
-        self._line_num = 0
-
-    def __iter__(self):
-        return self
-
-    def __next__(self) -> list:
-        row = self._reader.__next__()
-        if row is None:
-            raise StopIteration
-        self._line_num += 1
-        return list(row)
-
-    @property
-    def line_num(self) -> int:
-        return self._reader.line_num
+    return PyReader(csvfile, delimiter=delimiter, quotechar=quotechar, strict=strict, safe=safe)
 
 
 # ─── stdlib-compatible DictReader ───
 # Uses fetch_many() for batched retrieval — one Rust→Python call per batch
 # instead of per row. Interning fieldnames avoids repeated str alloc.
 
-_DICTREADER_BATCH = 4096
-
 class DictReader:
-    """Drop-in replacement for csv.DictReader()."""
+    """Drop-in replacement for csv.DictReader().
+    Returns cursor — reader itself supports row["name"], row.keys(), etc.
+    Zero allocation per row."""
 
     def __init__(
         self,
@@ -110,64 +99,40 @@ class DictReader:
     ):
         if dialect == "excel_tab":
             delimiter = "\t"
-        self._rust_reader = PyReader(f, delimiter=delimiter, quotechar=quotechar, strict=strict)
+        self._reader = PyReader(f, delimiter=delimiter, quotechar=quotechar, strict=strict)
         self._fieldnames = list(fieldnames) if fieldnames else None
         self.restkey = restkey
         self.restval = restval
         self.line_num = 0
-        # Batched row buffer
-        self._buffer: list = []
-        self._buf_idx = 0
+        self._names_set = False
 
     @property
     def fieldnames(self):
         if self._fieldnames is None:
-            # Read header from first row
-            self._ensure_buffer()
-            if self._buffer:
-                self._fieldnames = list(self._buffer[0])
-                self._buf_idx = 1
-            else:
-                self._fieldnames = []
+            row = next(self._reader)
+            self._fieldnames = [row[i] for i in range(len(row))]
+            if self._fieldnames:
+                self._reader.set_field_names(self._fieldnames)
+                self._names_set = True
         return self._fieldnames
 
     @fieldnames.setter
     def fieldnames(self, value):
         self._fieldnames = value
 
-    def _ensure_buffer(self):
-        """Fetch next batch from Rust reader if buffer is exhausted."""
-        if self._buf_idx >= len(self._buffer):
-            self._buffer = self._rust_reader.fetch_many(_DICTREADER_BATCH)
-            self._buf_idx = 0
-
     def __iter__(self):
         return self
 
-    def __next__(self) -> dict:
+    def __next__(self):
         if self._fieldnames is None:
-            self.fieldnames  # trigger reading header
+            self.fieldnames
+        if not self._names_set and self._fieldnames:
+            self._reader.set_field_names(self._fieldnames)
+            self._names_set = True
 
-        self._ensure_buffer()
-        if self._buf_idx >= len(self._buffer):
-            raise StopIteration
-
-        row = self._buffer[self._buf_idx]
-        self._buf_idx += 1
+        row = next(self._reader)
         self.line_num += 1
-
-        # Build dict — use interned fieldnames (Python interns short strings)
-        fn = self.fieldnames
-        d = {}
-        for i, name in enumerate(fn):
-            if i < len(row):
-                d[name] = row[i]
-            else:
-                d[name] = self.restval
-        if len(row) > len(fn):
-            d[self.restkey] = list(row[len(fn):])
-
-        return d
+        return row
 
 
 # ─── stdlib-compatible writer() ───

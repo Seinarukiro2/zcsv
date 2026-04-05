@@ -26,5 +26,12 @@ Thumbs.db
 
 # Test artifacts
 .pytest_cache/
+
+# Build artifacts
 *.dSYM
 *.dylib
+*.so
+*.abi3.so
+
+# Claude
+.claude/
