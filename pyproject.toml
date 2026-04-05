@@ -4,11 +4,14 @@ build-backend = "maturin"
 
 [project]
 name = "zcsv"
-version = "0.1.0"
+version = "0.2.0"
 description = "Blazing-fast drop-in replacement for Python's csv module, powered by Rust"
+readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-keywords = ["csv", "fast", "rust", "parser"]
+authors = [{ name = "Seinarukiro" }]
+keywords = ["csv", "fast", "rust", "parser", "simd", "zero-copy"]
+urls = { Homepage = "https://github.com/Seinarukiro2/zcsv", PyPI = "https://pypi.org/project/zcsv/" }
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

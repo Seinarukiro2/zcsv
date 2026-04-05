@@ -25,7 +25,7 @@ import collections.abc
 # Register Row as a Sequence so isinstance(row, Sequence) works
 collections.abc.Sequence.register(Row)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     # stdlib compat
     "reader",
