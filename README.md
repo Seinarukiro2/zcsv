@@ -12,7 +12,7 @@
 
 <br>
 
-<img src="assets/zcsv-benchmarks.svg" alt="zcsv benchmarks" width="720">
+<img src="https://raw.githubusercontent.com/Seinarukiro2/zcsv/main/assets/zcsv-benchmarks.png" alt="zcsv benchmarks" width="720">
 
 </div>
 
