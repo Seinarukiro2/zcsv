@@ -20,9 +20,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install maturin and build
+      - name: Build and test (unix)
+        if: runner.os != 'Windows'
         run: |
+          python -m venv .venv
+          source .venv/bin/activate
           pip install maturin pytest
           maturin develop --release
-      - name: Run tests
-        run: pytest tests/ -v
+          pytest tests/ -v
+      - name: Build and test (windows)
+        if: runner.os == 'Windows'
+        run: |
+          python -m venv .venv
+          .venv\Scripts\activate
+          pip install maturin pytest
+          maturin develop --release
+          pytest tests/ -v
