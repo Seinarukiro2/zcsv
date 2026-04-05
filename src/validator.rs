@@ -30,5 +30,5 @@ pub fn validate_rfc4180_inner(headers: &[String], rows: &[Vec<String>]) -> Resul
 #[allow(dead_code)]
 pub fn validate_rfc4180(headers: &[String], rows: &[Vec<String>]) -> PyResult<()> {
     validate_rfc4180_inner(headers, rows)
-        .map_err(|e| PyValueError::new_err(e))
+        .map_err(PyValueError::new_err)
 }

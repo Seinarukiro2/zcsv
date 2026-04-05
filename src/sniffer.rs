@@ -58,12 +58,12 @@ pub fn decode_bytes_inner(bytes: &[u8], encoding: Option<&str>) -> Result<String
 #[allow(dead_code)]
 pub fn decode_bytes(bytes: &[u8], encoding: Option<&str>) -> PyResult<String> {
     decode_bytes_inner(bytes, encoding)
-        .map_err(|e| PyValueError::new_err(e))
+        .map_err(PyValueError::new_err)
 }
 
 /// Detect the most likely delimiter by frequency analysis of first N lines.
 pub fn detect_delimiter(content: &str) -> u8 {
-    let candidates: &[u8] = &[b',', b';', b'\t', b'|', b':'];
+    let candidates: &[u8] = b",;\t|:";
     let sample: String = content.lines().take(20).collect::<Vec<_>>().join("\n");
 
     if sample.is_empty() {

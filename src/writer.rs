@@ -1,12 +1,10 @@
-use csv::WriterBuilder;
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyString};
+use pyo3::types::{PyDict, PyList};
 use std::io::{BufWriter, Write};
 
 const INJECTION_CHARS: &[u8] = b"=+-@\t\r";
-const WRITEROW_FLUSH_INTERVAL: usize = 1000;
-const BUF_WRITER_CAP: usize = 256 * 1024; // 256KB
+const BUF_WRITER_CAP: usize = 256 * 1024;
 
 /// Check if a byte slice starts with an injection char.
 #[inline]
@@ -75,12 +73,14 @@ fn append_field_inner(out: &mut Vec<u8>, s: &[u8], delim: u8, quote: u8, quoting
 /// The returned slice is valid as long as the Python string is alive.
 #[inline]
 unsafe fn pystring_as_bytes(obj: *mut ffi::PyObject) -> &'static [u8] {
-    let mut size: ffi::Py_ssize_t = 0;
-    let ptr = ffi::PyUnicode_AsUTF8AndSize(obj, &mut size);
-    if ptr.is_null() {
-        return b"";
+    unsafe {
+        let mut size: ffi::Py_ssize_t = 0;
+        let ptr = ffi::PyUnicode_AsUTF8AndSize(obj, &mut size);
+        if ptr.is_null() {
+            return b"";
+        }
+        std::slice::from_raw_parts(ptr as *const u8, size as usize)
     }
-    std::slice::from_raw_parts(ptr as *const u8, size as usize)
 }
 
 /// Write list[dict] to CSV file (high-level API)
@@ -154,9 +154,7 @@ pub struct PyWriter {
     quoting: u32,
     lineterminator: Vec<u8>,
     safe: bool,
-    /// Buffered output for writerow() — flushed every WRITEROW_FLUSH_INTERVAL rows
     buffer: Vec<u8>,
-    buffered_rows: usize,
 }
 
 #[pymethods]
@@ -182,7 +180,6 @@ impl PyWriter {
             lineterminator: lineterminator.as_bytes().to_vec(),
             safe,
             buffer: Vec::with_capacity(BUF_WRITER_CAP),
-            buffered_rows: 0,
         })
     }
 
@@ -259,75 +256,21 @@ impl PyWriter {
     /// Serialize one row from a raw PyObject pointer into self.buffer.
     /// Uses PyList_GET_ITEM + PyUnicode_AsUTF8AndSize for zero-copy field reads.
     unsafe fn serialize_row_ffi(&mut self, row_ptr: *mut ffi::PyObject) -> PyResult<()> {
-        let is_list = ffi::PyList_Check(row_ptr) != 0;
-        let len = if is_list {
-            ffi::PyList_Size(row_ptr) as usize
-        } else {
-            // fallback for tuples etc
-            ffi::PyObject_Length(row_ptr) as usize
-        };
-
-        for i in 0..len {
-            if i > 0 { self.buffer.push(self.delimiter); }
-
-            let item = if is_list {
-                ffi::PyList_GET_ITEM(row_ptr, i as ffi::Py_ssize_t)
-            } else {
-                ffi::PySequence_GetItem(row_ptr, i as ffi::Py_ssize_t)
-            };
-
-            // Get raw UTF-8 bytes — zero copy from Python's internal buffer
-            let bytes = if ffi::PyUnicode_Check(item) != 0 {
-                pystring_as_bytes(item)
-            } else {
-                // Non-string: call str() on it
-                let str_obj = ffi::PyObject_Str(item);
-                let b = pystring_as_bytes(str_obj);
-                ffi::Py_DECREF(str_obj);
-                b
-            };
-
-            // If not a list item (GetItem returns new ref), decref
-            if !is_list {
-                ffi::Py_DECREF(item);
-            }
-
-            append_field(&mut self.buffer, bytes, self.delimiter, self.quotechar, self.quoting, self.safe);
-        }
-        self.buffer.extend_from_slice(&self.lineterminator);
-        Ok(())
-    }
-
-    /// Extract all rows from a Python list as &[u8] slices via raw FFI.
-    /// Returns (flat vec of field byte slices, vec of column counts per row).
-    /// Slices point into Python's internal string buffers — valid while GIL held.
-    unsafe fn extract_rows_ffi(
-        &self,
-        list_ptr: *mut ffi::PyObject,
-    ) -> PyResult<(Vec<&'static [u8]>, Vec<usize>)> {
-        if ffi::PyList_Check(list_ptr) == 0 {
-            return Err(pyo3::exceptions::PyTypeError::new_err("Expected list"));
-        }
-
-        let nrows = ffi::PyList_Size(list_ptr) as usize;
-        // Estimate: 10 fields per row
-        let mut fields: Vec<&[u8]> = Vec::with_capacity(nrows * 10);
-        let mut cols_per_row: Vec<usize> = Vec::with_capacity(nrows);
-
-        for r in 0..nrows {
-            let row_ptr = ffi::PyList_GET_ITEM(list_ptr, r as ffi::Py_ssize_t);
+        unsafe {
             let is_list = ffi::PyList_Check(row_ptr) != 0;
-            let ncols = if is_list {
+            let len = if is_list {
                 ffi::PyList_Size(row_ptr) as usize
             } else {
                 ffi::PyObject_Length(row_ptr) as usize
             };
 
-            for c in 0..ncols {
+            for i in 0..len {
+                if i > 0 { self.buffer.push(self.delimiter); }
+
                 let item = if is_list {
-                    ffi::PyList_GET_ITEM(row_ptr, c as ffi::Py_ssize_t)
+                    ffi::PyList_GET_ITEM(row_ptr, i as ffi::Py_ssize_t)
                 } else {
-                    ffi::PySequence_GetItem(row_ptr, c as ffi::Py_ssize_t)
+                    ffi::PySequence_GetItem(row_ptr, i as ffi::Py_ssize_t)
                 };
 
                 let bytes = if ffi::PyUnicode_Check(item) != 0 {
@@ -343,12 +286,62 @@ impl PyWriter {
                     ffi::Py_DECREF(item);
                 }
 
-                fields.push(bytes);
+                append_field(&mut self.buffer, bytes, self.delimiter, self.quotechar, self.quoting, self.safe);
             }
-            cols_per_row.push(ncols);
+            self.buffer.extend_from_slice(&self.lineterminator);
+            Ok(())
         }
+    }
 
-        Ok((fields, cols_per_row))
+    /// Extract all rows from a Python list as &[u8] slices via raw FFI.
+    /// Returns (flat vec of field byte slices, vec of column counts per row).
+    /// Slices point into Python's internal string buffers — valid while GIL held.
+    unsafe fn extract_rows_ffi(
+        &self,
+        list_ptr: *mut ffi::PyObject,
+    ) -> PyResult<(Vec<&'static [u8]>, Vec<usize>)> {
+        unsafe {
+            if ffi::PyList_Check(list_ptr) == 0 {
+                return Err(pyo3::exceptions::PyTypeError::new_err("Expected list"));
+            }
+
+            let nrows = ffi::PyList_Size(list_ptr) as usize;
+            let mut fields: Vec<&[u8]> = Vec::with_capacity(nrows * 10);
+            let mut cols_per_row: Vec<usize> = Vec::with_capacity(nrows);
+
+            for r in 0..nrows {
+                let row_ptr = ffi::PyList_GET_ITEM(list_ptr, r as ffi::Py_ssize_t);
+                let is_list = ffi::PyList_Check(row_ptr) != 0;
+                let ncols = if is_list {
+                    ffi::PyList_Size(row_ptr) as usize
+                } else {
+                    ffi::PyObject_Length(row_ptr) as usize
+                };
+
+                for c in 0..ncols {
+                    let item = if is_list {
+                        ffi::PyList_GET_ITEM(row_ptr, c as ffi::Py_ssize_t)
+                    } else {
+                        ffi::PySequence_GetItem(row_ptr, c as ffi::Py_ssize_t)
+                    };
+
+                    let bytes = if ffi::PyUnicode_Check(item) != 0 {
+                        pystring_as_bytes(item)
+                    } else {
+                        let str_obj = ffi::PyObject_Str(item);
+                        let b = pystring_as_bytes(str_obj);
+                        ffi::Py_DECREF(str_obj);
+                        b
+                    };
+
+                    if !is_list { ffi::Py_DECREF(item); }
+                    fields.push(bytes);
+                }
+                cols_per_row.push(ncols);
+            }
+
+            Ok((fields, cols_per_row))
+        }
     }
 
     fn flush_buffer(&mut self, py: Python<'_>) -> PyResult<()> {
@@ -367,7 +360,6 @@ impl PyWriter {
         };
         self.file_obj.call_method1(py, "write", (py_str,))?;
         self.buffer.clear();
-        self.buffered_rows = 0;
         Ok(())
     }
 }

@@ -28,34 +28,35 @@ impl StringCache {
     /// Get cached PyString or create new one. Returns a NEW reference.
     #[inline]
     unsafe fn get_or_create(&mut self, bytes: &[u8]) -> *mut ffi::PyObject {
-        if !self.enabled {
-            return fast_pyobjects::fast_pystring(bytes);
-        }
-
-        if let Some(&cached) = self.cache.get(bytes) {
-            self.hits += 1;
-            ffi::Py_INCREF(cached);
-            return cached;
-        }
-
-        self.misses += 1;
-        let ptr = fast_pyobjects::fast_pystring(bytes);
-        if !ptr.is_null() {
-            ffi::Py_INCREF(ptr);
-            self.cache.insert(bytes.to_vec(), ptr);
-        }
-
-        // Adaptive: after 200 lookups, disable if hit ratio < 20%
-        let total = self.hits + self.misses;
-        if total == 200 && self.hits * 5 < total {
-            self.enabled = false;
-            for &ptr in self.cache.values() {
-                ffi::Py_DECREF(ptr);
+        unsafe {
+            if !self.enabled {
+                return fast_pyobjects::fast_pystring(bytes);
             }
-            self.cache.clear();
-        }
 
-        ptr
+            if let Some(&cached) = self.cache.get(bytes) {
+                self.hits += 1;
+                ffi::Py_INCREF(cached);
+                return cached;
+            }
+
+            self.misses += 1;
+            let ptr = fast_pyobjects::fast_pystring(bytes);
+            if !ptr.is_null() {
+                ffi::Py_INCREF(ptr);
+                self.cache.insert(bytes.to_vec(), ptr);
+            }
+
+            let total = self.hits + self.misses;
+            if total == 200 && self.hits * 5 < total {
+                self.enabled = false;
+                for &p in self.cache.values() {
+                    ffi::Py_DECREF(p);
+                }
+                self.cache.clear();
+            }
+
+            ptr
+        }
     }
 }
 
@@ -163,9 +164,8 @@ pub fn convert_to_dicts(
                 return Err(pyo3::exceptions::PyMemoryError::new_err("dict alloc failed"));
             }
 
-            for col_idx in 0..num_cols {
-                let val_ptr = parsed_columns[col_idx][row_idx]
-                    .to_ffi_object(&mut string_cache);
+            for (col_idx, col) in parsed_columns.iter().enumerate() {
+                let val_ptr = col[row_idx].to_ffi_object(&mut string_cache);
 
                 if val_ptr.is_null() {
                     ffi::Py_DECREF(dict);
@@ -173,13 +173,10 @@ pub fn convert_to_dicts(
                     return Err(pyo3::exceptions::PyMemoryError::new_err("value alloc failed"));
                 }
 
-                // PyDict_SetItem INCREFs both key and value
                 ffi::PyDict_SetItem(dict, interned_keys[col_idx], val_ptr);
-                // We own val_ptr, so DECREF after SetItem took its own ref
                 ffi::Py_DECREF(val_ptr);
             }
 
-            // PyList_SET_ITEM steals the dict reference — no INCREF
             ffi::PyList_SET_ITEM(list, row_idx as isize, dict);
         }
 
@@ -201,20 +198,22 @@ impl ParsedValue {
     /// Convert to raw CPython object pointer. Returns a NEW reference.
     #[inline]
     unsafe fn to_ffi_object(&self, cache: &mut StringCache) -> *mut ffi::PyObject {
-        match self {
-            ParsedValue::Null => {
-                let p = fast_pyobjects::fast_pynone();
-                ffi::Py_INCREF(p); // None is singleton, need to INCREF
-                p
+        unsafe {
+            match self {
+                ParsedValue::Null => {
+                    let p = fast_pyobjects::fast_pynone();
+                    ffi::Py_INCREF(p);
+                    p
+                }
+                ParsedValue::Int(v) => fast_pyobjects::fast_pyint(*v),
+                ParsedValue::Float(v) => fast_pyobjects::fast_pyfloat(*v),
+                ParsedValue::Bool(v) => {
+                    let p = fast_pyobjects::fast_pybool(*v);
+                    ffi::Py_INCREF(p);
+                    p
+                }
+                ParsedValue::Str(v) => cache.get_or_create(v.as_bytes()),
             }
-            ParsedValue::Int(v) => fast_pyobjects::fast_pyint(*v),
-            ParsedValue::Float(v) => fast_pyobjects::fast_pyfloat(*v),
-            ParsedValue::Bool(v) => {
-                let p = fast_pyobjects::fast_pybool(*v);
-                ffi::Py_INCREF(p); // True/False are singletons
-                p
-            }
-            ParsedValue::Str(v) => cache.get_or_create(v.as_bytes()),
         }
     }
 }

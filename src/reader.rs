@@ -52,9 +52,7 @@ fn build_shared_data(
     for result in rdr.byte_records() {
         let record = result.map_err(|e| format!("CSV parse error: {e}"))?;
         if skipped < skip_rows { skipped += 1; continue; }
-        if let Some(max) = max_rows {
-            if row_bounds.len() >= max { break; }
-        }
+        if max_rows.is_some_and(|max| row_bounds.len() >= max) { break; }
 
         let first_field = field_offsets.len() as u32;
         let mut num_fields = 0u16;
@@ -139,7 +137,7 @@ impl PyReader {
 
         let (shared, num_rows) = py.allow_threads(|| {
             build_shared_data(content.as_bytes(), delim, false, 0, None, None, strict)
-        }).map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        }).map_err(pyo3::exceptions::PyValueError::new_err)?;
 
         Ok(PyReader { shared, num_rows, current_row: 0, index: 0, line_num: 0 })
     }
@@ -275,7 +273,7 @@ impl PyReader {
     /// Snapshot current row as standalone Row object.
     fn snapshot(&self, py: Python<'_>) -> PyResult<PyObject> {
         let row = Row::new(Arc::clone(&self.shared), self.current_row as u32);
-        Ok(Py::new(py, row)?.into_any().into())
+        Ok(Py::new(py, row)?.into_any())
     }
 
     /// Batch as list[list[str]] via raw FFI — for DictReader fallback.

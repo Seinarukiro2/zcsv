@@ -60,6 +60,7 @@ impl AsRef<[u8]> for FileBytes {
 
 /// High-level read: path -> list[dict] with type inference.
 /// Uses mmap + SIMD CSV parsing + GIL release.
+#[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(signature = (
     path,
@@ -143,7 +144,7 @@ fn read_csv(
         };
 
         Ok((headers, raw_rows, type_map))
-    }).map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+    }).map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     let n = n_threads.unwrap_or(0);
     let result = parallel::convert_to_dicts(py, &headers, &raw_rows, &type_map, &null_vals, n)?;
@@ -172,6 +173,6 @@ fn sniff_delimiter(py: Python<'_>, path: &str) -> PyResult<String> {
         let file_bytes = read_file_bytes(&path)?;
         let content = sniffer::decode_bytes_inner(file_bytes.as_ref(), None)?;
         Ok(sniffer::detect_delimiter(&content))
-    }).map_err(|e| pyo3::exceptions::PyIOError::new_err(e))?;
+    }).map_err(pyo3::exceptions::PyIOError::new_err)?;
     Ok(String::from(delim as char))
 }
